@@ -11,6 +11,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func GetInvoices(c *gin.Context) {
+	var getInovoiceQueryParam types.GetInvoiceQuery
+	if c.ShouldBind(&getInovoiceQueryParam) == nil {
+		data, err := service.GetPagebaleInvoicesByCreateDate(getInovoiceQueryParam.CreatedAt, ">=", getInovoiceQueryParam.Size, getInovoiceQueryParam.Page)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, types.ApiResponse{Status: http.StatusBadRequest, Errors: nil, Message: "fetch invoices failed", Data: nil})
+		}
+		c.JSON(http.StatusOK, types.ApiResponse{Status: http.StatusOK, Errors: nil, Message: "fetch invoices success", Data: data})
+	}
+}
+
 func CreateInvoice(c *gin.Context) {
 	body := dto.CreateInvoiceDto{}
 

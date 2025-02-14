@@ -35,7 +35,7 @@ func InsertInvoice(createInvoicePayload dto.CreateInvoiceDto, cogs *float64, rem
 
 func InsertPhantomPurchase(createdAt string, locationId string, qty int32, accumulatedQty int32, accumulatedInventoryValue float64) (string, error) {
 	_, err := db.Db.Exec(
-		"INSERT INTO invoices (created_at, types, location_id, qty, stock_document_type, remaining_qty, accumulated_qty, accumulated_inventory_value) VALUES ($1, 'input', $2, $3, 'Phantom Purchase', $3, $4, $5)",
+		"INSERT INTO invoices (created_at, types, location_id, qty, stock_document_type, accumulated_qty, accumulated_inventory_value, used_phantom_qty) VALUES ($1, 'input', $2, $3, 'Phantom Purchase', $4, $5, $3)",
 		createdAt,
 		locationId,
 		qty,
@@ -96,6 +96,7 @@ func GetInvoicesByCreatedAt(createdAt string, operator string, size int, offset 
 			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		); err != nil {
 			return nil, err
 		}
@@ -109,17 +110,68 @@ func GetInvoicesByCreatedAt(createdAt string, operator string, size int, offset 
 	return invoices, nil
 }
 
-func GetOutstandingPhantomPurchase() (entity.Invoice) {
-	var invoice entity.Invoice
-	db.Db.QueryRow("SELECT id, types, qty, price, cogs, remaining_qty, accumulated_qty, accumulated_inventory_value FROM invoices WHERE remaining_qty > 0 AND stock_document_type LIKE 'Phantom%' ORDER BY created_at ASC LIMIT 1").Scan(
+func GetAllInvoicesByCreatedAt(createdAt string, operator string) ([]entity.Invoice, error) {
+	query := fmt.Sprintf("SELECT * FROM invoices WHERE created_at %s '%s' ORDER BY created_at ASC, id ASC", operator, createdAt)
+	rows, err := db.Db.Query(query)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var invoices []entity.Invoice
+	for rows.Next() {
+		var invoice entity.Invoice
+		if err := rows.Scan(
 			&invoice.Id,
+			&invoice.CreatedAt,
 			&invoice.Types,
+			&invoice.LocationId,
 			&invoice.Qty,
+			&invoice.StockDocumentType,
 			&invoice.Price,
 			&invoice.Cogs,
 			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
+		); err != nil {
+			return nil, err
+		}
+
+		invoices = append(invoices, invoice)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return invoices, nil
+}
+
+func GetOutstandingPhantomPurchase(createdAt string) (entity.Invoice) {
+	var invoice entity.Invoice
+	db.Db.QueryRow("SELECT * FROM invoices WHERE used_phantom_qty > 0 AND stock_document_type LIKE 'Phantom%' AND created_at <= $1 ORDER BY created_at ASC LIMIT 1", createdAt).Scan(
+			&invoice.Id,
+			&invoice.CreatedAt,
+			&invoice.Types,
+			&invoice.LocationId,
+			&invoice.Qty,
+			&invoice.StockDocumentType,
+			&invoice.Price,
+			&invoice.Cogs,
+			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
+			&invoice.AccumulatedQty,
+			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		)
 
 	return invoice
@@ -127,14 +179,47 @@ func GetOutstandingPhantomPurchase() (entity.Invoice) {
 
 func GetLatestInvoice(createdAt string) (entity.Invoice) {
 	var invoice entity.Invoice
-	db.Db.QueryRow("SELECT types, qty, price, cogs, remaining_qty, accumulated_qty, accumulated_inventory_value FROM invoices WHERE created_at <= $1 ORDER BY created_at DESC, id DESC LIMIT 1", createdAt).Scan(
+	db.Db.QueryRow("SELECT * FROM invoices WHERE created_at <= $1 ORDER BY created_at DESC, id DESC LIMIT 1", createdAt).Scan(
+			&invoice.Id,
+			&invoice.CreatedAt,
 			&invoice.Types,
+			&invoice.LocationId,
 			&invoice.Qty,
+			&invoice.StockDocumentType,
 			&invoice.Price,
 			&invoice.Cogs,
 			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
+		)
+
+	return invoice
+}
+
+func GetLatestUniqueInvoice(createdAt string, id int32) (entity.Invoice) {
+	var invoice entity.Invoice
+	db.Db.QueryRow("SELECT * FROM invoices WHERE created_at <= $1 AND id != $2 ORDER BY created_at DESC, id DESC LIMIT 1", createdAt, id).Scan(
+			&invoice.Id,
+			&invoice.CreatedAt,
+			&invoice.Types,
+			&invoice.LocationId,
+			&invoice.Qty,
+			&invoice.StockDocumentType,
+			&invoice.Price,
+			&invoice.Cogs,
+			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
+			&invoice.AccumulatedQty,
+			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		)
 
 	return invoice
@@ -142,15 +227,23 @@ func GetLatestInvoice(createdAt string) (entity.Invoice) {
 
 func GetFirstNonEmptyBatch() (entity.Invoice, error) {
 	var invoice entity.Invoice
-	queryError := db.Db.QueryRow("SELECT id, types, qty, price, cogs, remaining_qty, accumulated_qty, accumulated_inventory_value FROM invoices WHERE remaining_qty > 0 AND stock_document_type NOT LIKE '%Phantom%' ORDER BY created_at ASC, id ASC LIMIT 1").Scan(
+	queryError := db.Db.QueryRow("SELECT * FROM invoices WHERE remaining_qty > 0 AND stock_document_type NOT LIKE '%Phantom%' ORDER BY created_at ASC, id ASC LIMIT 1").Scan(
 			&invoice.Id,
+			&invoice.CreatedAt,
 			&invoice.Types,
+			&invoice.LocationId,
 			&invoice.Qty,
+			&invoice.StockDocumentType,
 			&invoice.Price,
 			&invoice.Cogs,
 			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		)
 
 	if queryError != nil {
@@ -175,15 +268,23 @@ func UpdateInvoiceRemainingQty(qty int32, id int32) (string, error) {
 
 func GetInvoiceById(id int32) (entity.Invoice, error) {
 	var invoice entity.Invoice
-	queryError := db.Db.QueryRow("SELECT id, types, qty, price, cogs, remaining_qty, accumulated_qty, accumulated_inventory_value FROM invoices WHERE id = $1", id).Scan(
+	queryError := db.Db.QueryRow("SELECT * FROM invoices WHERE id = $1", id).Scan(
 			&invoice.Id,
+			&invoice.CreatedAt,
 			&invoice.Types,
+			&invoice.LocationId,
 			&invoice.Qty,
+			&invoice.StockDocumentType,
 			&invoice.Price,
 			&invoice.Cogs,
 			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		)
 
 	if queryError != nil {
@@ -193,12 +294,13 @@ func GetInvoiceById(id int32) (entity.Invoice, error) {
 	}
 }
 
-func UpdateInvoice(cogs *float64, remainingQty int32, fifoInputMovementId *int, accumulatedQty int32, accumulatedInventoryValue float64, id int32) (string, error) {
+func UpdateInvoice(cogs *float64, remainingQty int32, fifoInputMovementId *int32, fifoInputPreAdjustmentRemainingQty *int32, accumulatedQty int32, accumulatedInventoryValue float64, id int32) (string, error) {
 	_, err := db.Db.Exec(
-		"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, accumulated_qty = $4, accumulated_inventory_value = $5 WHERE id = $6",
+		"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6 WHERE id = $7",
 		cogs,
 		remainingQty,
 		fifoInputMovementId,
+		fifoInputPreAdjustmentRemainingQty,
 		accumulatedQty,
 		accumulatedInventoryValue,
 		id,
@@ -211,27 +313,34 @@ func UpdateInvoice(cogs *float64, remainingQty int32, fifoInputMovementId *int, 
 
 func DeleteNewerPhantomInvoice(createdAt string) (string, error) {
 	_, err := db.Db.Exec(
-		"DELETE invoices WHERE createdAt > $1",
+		"DELETE FROM invoices WHERE created_at > $1 AND stock_document_type LIKE '%Phantom%'",
 		createdAt,
 	)
 	if err != nil {
-		return "update invoice failed", err
+		return "delete phantom invoice failed", err
 	}
-	return "update invoice success", nil
+	return "delete phantom invoice success", nil
 }
 
 func GetLastOutputInvoice(createdAt string) (entity.Invoice, error) {
 	var invoice entity.Invoice
-	queryError := db.Db.QueryRow("SELECT id, types, qty, price, cogs, remaining_qty, fifo_input_stock_movement_id, accumulated_qty, accumulated_inventory_value FROM invoices WHERE created_at > $1 AND types = 'output' ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET 0").Scan(
+	queryError := db.Db.QueryRow("SELECT * FROM invoices WHERE created_at > $1 AND types = 'output' ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET 0", createdAt).Scan(
 			&invoice.Id,
+			&invoice.CreatedAt,
 			&invoice.Types,
+			&invoice.LocationId,
 			&invoice.Qty,
+			&invoice.StockDocumentType,
 			&invoice.Price,
 			&invoice.Cogs,
 			&invoice.RemainingQty,
 			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
 			&invoice.AccumulatedQty,
 			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
 		)
 
 	if queryError != nil {
@@ -241,14 +350,56 @@ func GetLastOutputInvoice(createdAt string) (entity.Invoice, error) {
 	}
 }
 
-func ResetRemainingQty(createdAt string) (string, error) {
+func GetNewerNonPhantomOutputInvoice(createdAt string) (entity.Invoice, error) {
+	var invoice entity.Invoice
+	queryError := db.Db.QueryRow("SELECT * FROM invoices WHERE created_at > $1 AND types = 'output' AND stock_document_type NOT LIKE '%Phantom%' ORDER BY created_at ASC, id ASC LIMIT 1 OFFSET 0", createdAt).Scan(
+			&invoice.Id,
+			&invoice.CreatedAt,
+			&invoice.Types,
+			&invoice.LocationId,
+			&invoice.Qty,
+			&invoice.StockDocumentType,
+			&invoice.Price,
+			&invoice.Cogs,
+			&invoice.RemainingQty,
+			&invoice.FifoInputStockMovementId,
+			&invoice.FifoInputPreAdjustmentRemainingQty,
+			&invoice.SalesReturnId,
+			&invoice.PurchaseReturnId,
+			&invoice.AccumulatedQty,
+			&invoice.AccumulatedInventoryValue,
+			&invoice.UsedPhantomQty,
+		)
+
+	if queryError != nil {
+		return entity.Invoice{}, queryError
+	} else {
+		return invoice, nil
+	}
+}
+
+func ResetRemainingQty(createdAt string, id int32) (string, error) {
 	_, err := db.Db.Exec(
-		"UPDATE invoices SET remaining_qty = qty WHERE created_at > $1 AND type = 'input'",
+		"UPDATE invoices SET remaining_qty = qty WHERE created_at > $1 AND types = 'input' AND stock_document_type NOT LIKE '%Phantom%' AND id != $2",
 		createdAt,
+		id,
 	)
 	if err != nil {
 		return "update invoice failed", err
 	}
 
 	return "reset remaining qty success", nil
+}
+
+func UpdateInvoiceUsedPhantomQty(qty int32, id int32) (string, error) {
+	_, err := db.Db.Exec(
+		"UPDATE invoices SET used_phantom_qty = $1 WHERE id = $2",
+		qty,
+		id,
+	)
+	if err != nil {
+		return "update invoice used phantom qty failed", err
+	}
+
+	return "update invoice used phantom qty success", nil
 }

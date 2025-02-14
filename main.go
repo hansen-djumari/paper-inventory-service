@@ -20,7 +20,7 @@ func main() {
 	})
 	invoiceRoute := r.Group("/invoice")
 	{
-		// invoiceRoute.GET("/", controller.GetInvoicesByCreateDate)
+		invoiceRoute.GET("/", controller.GetInvoices)
 		invoiceRoute.POST("/", controller.CreateInvoice)
 	}
 
