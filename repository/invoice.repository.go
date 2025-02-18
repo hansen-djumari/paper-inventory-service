@@ -7,9 +7,10 @@ import (
 	"paper/inventory-api/entity"
 )
 
-func InsertInvoice(transaction *sql.Tx, createInvoicePayload dto.CreateInvoiceDto, cogs *float64, remainingQty int32, fifoInputStockMovementId *int32, fifoInputPreAdjustmentRemainingQty *int32, accumulatedQty int32, accumulatedInventoryValue float64, usedPhantomQty *int32) (string, error) {
-	_, err := transaction.Exec(
-		"INSERT INTO invoices (created_at, types, location_id, qty, stock_document_type, price, cogs, remaining_qty, fifo_input_stock_movement_id, fifo_input_pre_adjustment_remaining_qty, sales_return_id, purchase_return_id, accumulated_qty, accumulated_inventory_value, used_phantom_qty) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+func InsertInvoice(transaction *sql.Tx, createInvoicePayload dto.CreateInvoiceDto, cogs *float64, remainingQty int32, fifoInputStockMovementId *int32, fifoInputPreAdjustmentRemainingQty *int32, accumulatedQty int32, accumulatedInventoryValue float64, usedPhantomQty *int32) (entity.Invoice) {
+	var invoice entity.Invoice
+	transaction.QueryRow(
+		"INSERT INTO invoices (created_at, types, location_id, qty, stock_document_type, price, cogs, remaining_qty, fifo_input_stock_movement_id, fifo_input_pre_adjustment_remaining_qty, sales_return_id, purchase_return_id, accumulated_qty, accumulated_inventory_value, used_phantom_qty) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id, remaining_qty",
 		createInvoicePayload.CreatedAt,
 		createInvoicePayload.Types,
 		createInvoicePayload.LocationId,
@@ -25,14 +26,12 @@ func InsertInvoice(transaction *sql.Tx, createInvoicePayload dto.CreateInvoiceDt
 		accumulatedQty,
 		accumulatedInventoryValue,
 		usedPhantomQty,
+	).Scan(
+		&invoice.Id,
+		&invoice.RemainingQty,
 	)
 
-	if err != nil {
-		transaction.Rollback()
-		return "create invoice failed", err
-	}
-
-	return "create invoice success", nil
+	return invoice
 }
 
 func InsertPhantomPurchase(transaction *sql.Tx, createdAt string, locationId string, qty int32, accumulatedQty int32, accumulatedInventoryValue float64) (entity.Invoice, error) {
@@ -74,7 +73,7 @@ func InsertClearPhantomPurchase(transaction *sql.Tx, createdAt string, qty int32
 	return "create phantom purchase failed", nil
 }
 
-func GetInvoicesByCreatedAt(transaction *sql.Tx, createdAt string, operator string, size int, offset int) ([]entity.Invoice, error) {
+func GetPageableInvoicesByCreatedAt(transaction *sql.Tx, createdAt string, operator string, size int, offset int) ([]entity.Invoice, error) {
 	query := fmt.Sprintf("SELECT * FROM invoices WHERE created_at %s '%s' ORDER BY created_at ASC, id ASC LIMIT %d OFFSET %d", operator, createdAt, size, offset)
 	rows, err := transaction.Query(query)
 
@@ -308,12 +307,12 @@ func GetInvoiceById(transaction *sql.Tx, id int32) (entity.Invoice, error) {
 	}
 }
 
-func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoInputMovementId *int32, fifoInputPreAdjustmentRemainingQty *int32, accumulatedQty int32, accumulatedInventoryValue float64, usedPhantomQty *int32, id int32, phantomId int32) (string, error) {
-	var err error
+func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoInputMovementId *int32, fifoInputPreAdjustmentRemainingQty *int32, accumulatedQty int32, accumulatedInventoryValue float64, usedPhantomQty *int32, id int32, phantomId int32) (entity.Invoice) {
+	var invoice entity.Invoice
 	if usedPhantomQty == nil {
 		if phantomId == 0 {
-			_, err = transaction.Exec(
-				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = used_phantom_qty WHERE id = $7",
+			transaction.QueryRow(
+				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = used_phantom_qty WHERE id = $7 RETURNING id, remaining_qty",
 				cogs,
 				remainingQty,
 				fifoInputMovementId,
@@ -321,10 +320,13 @@ func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoI
 				accumulatedQty,
 				accumulatedInventoryValue,
 				id,
+			).Scan(
+				&invoice.Id,
+				&invoice.RemainingQty,
 			)
 		} else {
-			_, err = transaction.Exec(
-				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, id = $7 used_phantom_qty = used_phantom_qty WHERE id = $8",
+			transaction.QueryRow(
+				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, id = $7, used_phantom_qty = used_phantom_qty WHERE id = $8 RETURNING id, remaining_qty",
 				cogs,
 				remainingQty,
 				fifoInputMovementId,
@@ -333,12 +335,15 @@ func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoI
 				accumulatedInventoryValue,
 				phantomId,
 				id,
+			).Scan(
+				&invoice.Id,
+				&invoice.RemainingQty,
 			)
 		}
 	} else {
 		if phantomId == 0 {
-			_, err = transaction.Exec(
-				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = $7 WHERE id = $8",
+			transaction.QueryRow(
+				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = $7 WHERE id = $8 RETURNING id, remaining_qty",
 				cogs,
 				remainingQty,
 				fifoInputMovementId,
@@ -347,10 +352,13 @@ func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoI
 				accumulatedInventoryValue,
 				usedPhantomQty,
 				id,
+			).Scan(
+				&invoice.Id,
+				&invoice.RemainingQty,
 			)
 		} else {
-			_, err = transaction.Exec(
-				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = $7, id = $8 WHERE id = $9",
+			transaction.QueryRow(
+				"UPDATE invoices SET cogs = $1, remaining_qty = $2, fifo_input_stock_movement_id = $3, fifo_input_pre_adjustment_remaining_qty = $4, accumulated_qty = $5, accumulated_inventory_value = $6, used_phantom_qty = $7, id = $8 WHERE id = $9 RETURNING id, remaining_qty",
 				cogs,
 				remainingQty,
 				fifoInputMovementId,
@@ -360,14 +368,14 @@ func UpdateInvoice(transaction *sql.Tx, cogs *float64, remainingQty int32, fifoI
 				usedPhantomQty,
 				phantomId,
 				id,
+			).Scan(
+				&invoice.Id,
+				&invoice.RemainingQty,
 			)
 		}
 	}
-	if err != nil {
-		transaction.Rollback()
-		return "update invoice failed", err
-	}
-	return "update invoice success", nil
+
+	return invoice
 }
 
 func DeleteNewerPhantomInvoice(transaction *sql.Tx, createdAt string) (string, error) {
@@ -410,9 +418,9 @@ func GetLastOutputInvoice(transaction *sql.Tx, createdAt string) (entity.Invoice
 	}
 }
 
-func GetNewerNonPhantomOutputInvoice(transaction *sql.Tx, createdAt string) (entity.Invoice, error) {
+func GetNewerNonPhantomOutputInvoice(transaction *sql.Tx, createdAt string) (entity.Invoice) {
 	var invoice entity.Invoice
-	queryError := transaction.QueryRow("SELECT * FROM invoices WHERE created_at > $1 AND types = 'output' AND stock_document_type NOT LIKE '%Phantom%' ORDER BY created_at ASC, id ASC LIMIT 1 OFFSET 0", createdAt).Scan(
+	transaction.QueryRow("SELECT * FROM invoices WHERE created_at > $1 AND types = 'output' AND stock_document_type NOT LIKE '%Phantom%' ORDER BY created_at ASC, id ASC LIMIT 1 OFFSET 0", createdAt).Scan(
 			&invoice.Id,
 			&invoice.CreatedAt,
 			&invoice.Types,
@@ -430,12 +438,7 @@ func GetNewerNonPhantomOutputInvoice(transaction *sql.Tx, createdAt string) (ent
 			&invoice.AccumulatedInventoryValue,
 			&invoice.UsedPhantomQty,
 		)
-
-	if queryError != nil {
-		return entity.Invoice{}, queryError
-	} else {
-		return invoice, nil
-	}
+	return invoice
 }
 
 func ResetRemainingQty(transaction *sql.Tx, createdAt string, id int32) (string, error) {
